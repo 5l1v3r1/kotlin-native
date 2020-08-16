@@ -208,6 +208,31 @@ internal val tailrecPhase = makeKonanFileLoweringPhase(
         prerequisite = setOf(localFunctionsPhase)
 )
 
+internal val testProcessorPhase = makeKonanFileOpPhase(
+        { context, irFile -> TestProcessor(context).process(irFile) },
+        name = "TestProcessor",
+        description = "Unit test processor"
+)
+
+internal val singleAbstractMethodPhase = makeKonanFileLoweringPhase(
+        ::NativeSingleAbstractMethodLowering,
+        name = "SingleAbstractMethod",
+        description = "Replace SAM conversions with instances of interface-implementing classes"
+)
+
+internal val delegationPhase = makeKonanFileLoweringPhase(
+        ::PropertyDelegationLowering,
+        name = "Delegation",
+        description = "Delegation lowering"
+)
+
+internal val functionReferencePhase = makeKonanFileLoweringPhase(
+        ::FunctionReferenceLowering,
+        name = "FunctionReference",
+        description = "Function references lowering",
+        prerequisite = setOf(delegationPhase) // TODO: make weak dependency on `testProcessorPhase`
+)
+
 internal val defaultParameterExtentPhase = makeKonanFileOpPhase(
         { context, irFile ->
             DefaultArgumentStubGenerator(context, skipInlineMethods = false).lower(irFile)
@@ -216,7 +241,7 @@ internal val defaultParameterExtentPhase = makeKonanFileOpPhase(
         },
         name = "DefaultParameterExtent",
         description = "Default parameter extent lowering",
-        prerequisite = setOf(tailrecPhase, enumConstructorsPhase)
+        prerequisite = setOf(tailrecPhase, enumConstructorsPhase, functionReferencePhase)
 )
 
 internal val innerClassPhase = makeKonanFileLoweringPhase(
@@ -244,12 +269,6 @@ internal val dataClassesPhase = makeKonanFileLoweringPhase(
         description = "Data classes lowering"
 )
 
-internal val singleAbstractMethodPhase = makeKonanFileLoweringPhase(
-        ::NativeSingleAbstractMethodLowering,
-        name = "SingleAbstractMethod",
-        description = "Replace SAM conversions with instances of interface-implementing classes"
-)
-
 internal val builtinOperatorPhase = makeKonanFileLoweringPhase(
         ::BuiltinOperatorLowering,
         name = "BuiltinOperators",
@@ -264,30 +283,11 @@ internal val finallyBlocksPhase = makeKonanFileLoweringPhase(
         prerequisite = setOf(initializersPhase, localFunctionsPhase, tailrecPhase)
 )
 
-internal val testProcessorPhase = makeKonanFileOpPhase(
-        { context, irFile -> TestProcessor(context).process(irFile) },
-        name = "TestProcessor",
-        description = "Unit test processor"
-)
-
 internal val enumClassPhase = makeKonanFileOpPhase(
         { context, irFile -> EnumClassLowering(context).run(irFile) },
         name = "Enums",
         description = "Enum classes lowering",
         prerequisite = setOf(enumConstructorsPhase) // TODO: make weak dependency on `testProcessorPhase`
-)
-
-internal val delegationPhase = makeKonanFileLoweringPhase(
-        ::PropertyDelegationLowering,
-        name = "Delegation",
-        description = "Delegation lowering"
-)
-
-internal val functionReferencePhase = makeKonanFileLoweringPhase(
-        ::FunctionReferenceLowering,
-        name = "FunctionReference",
-        description = "Function references lowering",
-        prerequisite = setOf(delegationPhase) // TODO: make weak dependency on `testProcessorPhase`
 )
 
 internal val interopPhase = makeKonanFileLoweringPhase(
