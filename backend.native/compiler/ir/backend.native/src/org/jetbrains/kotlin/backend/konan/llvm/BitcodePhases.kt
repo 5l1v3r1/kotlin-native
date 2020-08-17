@@ -217,7 +217,7 @@ internal val escapeAnalysisPhase = makeKonanModuleOpPhase(
                     context.devirtualizationAnalysisResult!!,
                     // Can't tolerate any non-devirtualized call site for a library.
                     // TODO: What about private virtual functions?
-                    if (entryPoint == null) 0 else 5
+                    nonDevirtualizedCallSitesUnfoldFactor = if (entryPoint == null) 0 else 5
             ).build()
             EscapeAnalysis.computeLifetimes(
                     context, context.moduleDFG!!, externalModulesDFG, callGraph, context.lifetimes

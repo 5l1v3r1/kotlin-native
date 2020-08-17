@@ -19,6 +19,15 @@ import kotlin.math.min
 private val DataFlowIR.Node.isAlloc
     get() = this is DataFlowIR.Node.NewObject || this is DataFlowIR.Node.AllocInstance
 
+private val DataFlowIR.Node.ir
+    get() = when (this) {
+        is DataFlowIR.Node.Call -> irCallSite
+        is DataFlowIR.Node.AllocInstance -> irCallSite
+        is DataFlowIR.Node.ArrayRead -> irCallSite
+        is DataFlowIR.Node.FieldRead -> ir
+        else -> null
+    }
+
 internal object EscapeAnalysis {
 
     /*
@@ -34,8 +43,12 @@ internal object EscapeAnalysis {
      * The analysis is performed in two main stages - intraprocedural and interprocedural.
      * During intraprocedural analysis we remove all control flow related expressions and compute all possible
      * values of all variables within a function.
-     * The goal of interprocedural analysis is to build points-to graph (an edge is created from A to B iff A holds
-     * a reference to B). This is done by building call graph (using devirtualization for more precise result).
+     * The goal of interprocedural analysis is to build points-to graph (object A references object B if and only if
+     * there is a path from the node A to the node B). This is done by building call graph (using devirtualization
+     * for more precise result). But in practice holding this condition both ways can be difficult and bad in terms of
+     * performance, so the algorithm tries to ensure only one part: if object A references object B then there must be
+     * a path from the node A to the node B, with that none of the constraints from the original program will be lost.
+     * It is ok to add some additional constraints, as long as there are not too many of those.
      *
      * How do we exactly build the points-to graph out of the call graph?
      * 1. Build condensation of the call graph.
@@ -97,7 +110,7 @@ internal object EscapeAnalysis {
         if (DEBUG > severity) block()
     }
 
-    // A special marker field for external types implemented in C++ (mainly, arrays).
+    // A special marker field for external types implemented in the runtime (mainly, arrays).
     // The types being passed to the constructor are not used in the analysis - just put there anything.
     private val intestinesField = DataFlowIR.Field(null, DataFlowIR.Type.Virtual, 1L, "inte\$tines")
 
@@ -119,6 +132,7 @@ internal object EscapeAnalysis {
     // The less the higher an object escapes.
     object Depths {
         val INFINITY = 1_000_000
+        val ROOT_SCOPE = 0
         val RETURN_VALUE = -1
         val PARAMETER = -2
     }
@@ -175,7 +189,7 @@ internal object EscapeAnalysis {
                     else
                         nodesRoles[node] = NodeInfo(depth)
                 }
-                computeDepths(body.rootScope, -1)
+                computeDepths(body.rootScope, Depths.ROOT_SCOPE - 1)
 
                 fun assignRole(node: DataFlowIR.Node, role: Role, infoEntry: RoleInfoEntry?) {
                     nodesRoles[node]!!.add(role, infoEntry)
@@ -208,11 +222,13 @@ internal object EscapeAnalysis {
                                 assignRole(receiver.node, Role.READ_FIELD, RoleInfoEntry(node, node.field))
                         }
 
-                        is DataFlowIR.Node.ArrayWrite ->
+                        is DataFlowIR.Node.ArrayWrite -> {
                             assignRole(node.array.node, Role.WRITE_FIELD, RoleInfoEntry(node.value.node, intestinesField))
+                        }
 
-                        is DataFlowIR.Node.ArrayRead ->
+                        is DataFlowIR.Node.ArrayRead -> {
                             assignRole(node.array.node, Role.READ_FIELD, RoleInfoEntry(node, intestinesField))
+                        }
 
                         is DataFlowIR.Node.Variable -> {
                             for (value in node.values)
@@ -244,9 +260,7 @@ internal object EscapeAnalysis {
             object Return : NodeKind() {
                 override val absoluteIndex = 0
 
-                override fun equals(other: Any?): Boolean {
-                    return other === this
-                }
+                override fun equals(other: Any?) = other === this
 
                 override fun toString() = "RET"
             }
@@ -255,9 +269,7 @@ internal object EscapeAnalysis {
                 override val absoluteIndex: Int
                     get() = -1_000_000 + index
 
-                override fun equals(other: Any?): Boolean {
-                    return index == (other as? Param)?.index
-                }
+                override fun equals(other: Any?) = index == (other as? Param)?.index
 
                 override fun toString() = "P$index"
             }
@@ -266,9 +278,7 @@ internal object EscapeAnalysis {
                 override val absoluteIndex: Int
                     get() = index + 1
 
-                override fun equals(other: Any?): Boolean {
-                    return index == (other as? Drain)?.index
-                }
+                override fun equals(other: Any?) = index == (other as? Drain)?.index
 
                 override fun toString() = "D$index"
             }
@@ -344,9 +354,7 @@ internal object EscapeAnalysis {
                 return from == other.from && to == other.to
             }
 
-            override fun toString(): String {
-                return "$from -> $to"
-            }
+            override fun toString() = "$from -> $to"
 
             companion object {
                 fun pointsTo(param1: Int, param2: Int, totalParams: Int, kind: Int): Edge {
@@ -540,8 +548,7 @@ internal object EscapeAnalysis {
             val pointsToGraphs = nodes.associateBy({ it }, { PointsToGraph(it) })
             val toAnalyze = mutableSetOf<DataFlowIR.FunctionSymbol>()
             toAnalyze.addAll(nodes)
-            val numberOfRuns = mutableMapOf<DataFlowIR.FunctionSymbol, Int>()
-            nodes.forEach { numberOfRuns[it] = 0 }
+            val numberOfRuns = nodes.associateWith { 0 }.toMutableMap()
             while (toAnalyze.isNotEmpty()) {
                 val function = toAnalyze.first()
                 toAnalyze.remove(function)
@@ -584,14 +591,7 @@ internal object EscapeAnalysis {
 
             for (graph in pointsToGraphs.values) {
                 for (node in graph.nodes.keys) {
-                    val ir = when (node) {
-                        is DataFlowIR.Node.Call -> node.irCallSite
-                        is DataFlowIR.Node.AllocInstance -> node.irCallSite
-                        is DataFlowIR.Node.ArrayRead -> node.irCallSite
-                        is DataFlowIR.Node.FieldRead -> node.ir
-                        else -> null
-                    }
-                    ir?.let {
+                    node.ir?.let {
                         val lifetime = graph.lifetimeOf(node)
 
                         if (node.isAlloc) {
@@ -743,7 +743,7 @@ internal object EscapeAnalysis {
 
             private val fields = mutableMapOf<DataFlowIR.Field, PointsToGraphNode>()
 
-            fun gotoField(field: DataFlowIR.Field, graph: PointsToGraph) = fields.getOrPut(field) {
+            fun getFieldNode(field: DataFlowIR.Field, graph: PointsToGraph) = fields.getOrPut(field) {
                 val node = PointsToGraphNode(NodeInfo(), null)
                 edges += PointsToGraphEdge(node, field)
                 graph.allNodes += node
@@ -867,7 +867,7 @@ internal object EscapeAnalysis {
                     val ptgNode = nodes[node]!!
                     addEdges(ptgNode, roles)
                     if (ptgNode.beingReturned) {
-                        returnsNode.gotoField(returnsValueField, this).addAssignmentEdge(ptgNode)
+                        returnsNode.getFieldNode(returnsValueField, this).addAssignmentEdge(ptgNode)
                         returnValues += node
                     }
                     if (roles.escapes())
@@ -898,12 +898,12 @@ internal object EscapeAnalysis {
                 roles.data[Role.WRITE_FIELD]?.entries?.forEach { roleInfo ->
                     val value = nodes[roleInfo.node!!]!!
                     val field = roleInfo.field!!
-                    from.gotoField(field, this).addAssignmentEdge(value)
+                    from.getFieldNode(field, this).addAssignmentEdge(value)
                 }
                 roles.data[Role.READ_FIELD]?.entries?.forEach { roleInfo ->
                     val result = nodes[roleInfo.node!!]!!
                     val field = roleInfo.field!!
-                    result.addAssignmentEdge(from.gotoField(field, this))
+                    result.addAssignmentEdge(from.getFieldNode(field, this))
                 }
             }
 
@@ -999,11 +999,10 @@ internal object EscapeAnalysis {
                         return arg to rootNode
                     val path = compressedNode.path
                     var node: PointsToGraphNode = rootNode
-                    for (i in path.indices) {
-                        val field = path[i]
+                    for (field in path) {
                         node = when (field) {
                             returnsValueField -> node
-                            else -> node.gotoField(field, this)
+                            else -> node.getFieldNode(field, this)
                         }
                     }
                     return arg to node
@@ -1126,6 +1125,12 @@ internal object EscapeAnalysis {
                     }
                 }
 
+                fun PointsToGraphNode.flipTo(otherDrain: PointsToGraphNode) {
+                    drain = otherDrain
+                    otherDrain.edges += edges
+                    edges.clear()
+                }
+
                 // Merge the components multi-edges are pointing at.
                 // TODO: This looks very similar to the system of disjoint sets algorithm.
                 while (true) {
@@ -1149,35 +1154,28 @@ internal object EscapeAnalysis {
                     for ((first, second) in toMerge) {
                         // Merge components: try to flip one drain to the other if possible,
                         // otherwise just create a new one.
+
                         val firstDrain = first.actualDrain!!
                         val secondDrain = second.actualDrain!!
                         when {
                             firstDrain == secondDrain -> continue
 
                             firstDrain in createdDrains -> {
-                                secondDrain.drain = firstDrain
-                                firstDrain.edges += secondDrain.edges
-                                secondDrain.edges.clear()
+                                secondDrain.flipTo(firstDrain)
                                 possibleDrains += firstDrain
                             }
 
                             secondDrain in createdDrains -> {
-                                firstDrain.drain = secondDrain
-                                secondDrain.edges += firstDrain.edges
-                                firstDrain.edges.clear()
+                                firstDrain.flipTo(secondDrain)
                                 possibleDrains += secondDrain
                             }
 
                             else -> {
                                 // Create a new drain in order to not create false constraints.
                                 val newDrain = PointsToGraphNode(NodeInfo(), null).also { createdDrains += it }
-                                firstDrain.drain = newDrain
-                                secondDrain.drain = newDrain
                                 newDrain.drain = newDrain
-                                newDrain.edges += firstDrain.edges
-                                newDrain.edges += secondDrain.edges
-                                firstDrain.edges.clear()
-                                secondDrain.edges.clear()
+                                firstDrain.flipTo(newDrain)
+                                secondDrain.flipTo(newDrain)
                                 possibleDrains += newDrain
                             }
                         }
@@ -1201,13 +1199,9 @@ internal object EscapeAnalysis {
                     val fields = mutableMapOf<DataFlowIR.Field, PointsToGraphNode>()
                     for (edge in drain.edges) {
                         val field = edge.field ?: error("A drain cannot have outgoing assignment edges!")
-                        val fieldNode = fields[field]
                         val node = edge.node.actualDrain!!
-                        if (fieldNode == null)
-                            fields[field] = node
-                        else {
-                            if (fieldNode != node)
-                                error("Drains have not been built correctly")
+                        fields.getOrPut(field) { node }.also {
+                            if (it != node) error("Drains have not been built correctly")
                         }
                     }
                 }
@@ -1227,10 +1221,8 @@ internal object EscapeAnalysis {
                         val nextDrain = nodes.atMostOne { it.node.actualDrain == it.node }?.node?.actualDrain
                         if (nextDrain != null) {
                             val newDrain = PointsToGraphNode(NodeInfo(), null).also { allNodes += it }
-                            nextDrain.drain = newDrain
                             newDrain.drain = newDrain
-                            newDrain.edges += nextDrain.edges
-                            nextDrain.edges.clear()
+                            nextDrain.flipTo(newDrain)
                         }
                         val mergedNode = PointsToGraphNode(NodeInfo(), null).also { allNodes += it }
                         nodes.forEach {
@@ -1262,6 +1254,7 @@ internal object EscapeAnalysis {
                             edge.node.reversedEdges += PointsToGraphEdge(node, null)
             }
 
+            // Drains, other than interesting, can be safely omitted from the result.
             private fun findInterestingDrains(parameters: Array<PointsToGraphNode?>): Set<PointsToGraphNode> {
                 // Starting with all reachable from the parameters.
                 val interestingDrains = mutableSetOf<PointsToGraphNode>()
@@ -1598,14 +1591,7 @@ internal object EscapeAnalysis {
 
                 val stackArrayCandidates = mutableListOf<ArrayStaticAllocation>()
                 for ((node, ptgNode) in nodes) {
-                    val ir = when (node) {
-                        is DataFlowIR.Node.Call -> node.irCallSite
-                        is DataFlowIR.Node.AllocInstance -> node.irCallSite
-                        is DataFlowIR.Node.ArrayRead -> node.irCallSite
-                        is DataFlowIR.Node.FieldRead -> node.ir
-                        else -> null
-                    }
-                    ir?.let {
+                    node.ir?.let {
                         val computedLifetime = lifetimeOf(node)
                         var lifetime = computedLifetime
 
