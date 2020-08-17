@@ -463,7 +463,7 @@ internal object EscapeAnalysis {
             return externalModulesDFG.publicTypes[hash] ?: error("Unable to resolve exported type $hash")
         }
 
-        val escapeAnalysisResults = mutableMapOf<DataFlowIR.FunctionSymbol, FunctionEscapeAnalysisResult>()
+        val escapeAnalysisResults = mutableMapOf<DataFlowIR.FunctionSymbol.Declared, FunctionEscapeAnalysisResult>()
 
         fun analyze() {
 
@@ -529,7 +529,7 @@ internal object EscapeAnalysis {
         var stackAllocsCount = 0
         var totalGraphSize = 0
 
-        private fun analyze(callGraph: CallGraph, multiNode: DirectedGraphMultiNode<DataFlowIR.FunctionSymbol>) {
+        private fun analyze(callGraph: CallGraph, multiNode: DirectedGraphMultiNode<DataFlowIR.FunctionSymbol.Declared>) {
             val nodes = multiNode.nodes.filter { intraproceduralAnalysisResults.containsKey(it) }.toMutableSet()
 
             DEBUG_OUTPUT(0) {
@@ -546,7 +546,7 @@ internal object EscapeAnalysis {
             }
 
             val pointsToGraphs = nodes.associateBy({ it }, { PointsToGraph(it) })
-            val toAnalyze = mutableSetOf<DataFlowIR.FunctionSymbol>()
+            val toAnalyze = mutableSetOf<DataFlowIR.FunctionSymbol.Declared>()
             toAnalyze.addAll(nodes)
             val numberOfRuns = nodes.associateWith { 0 }.toMutableMap()
             while (toAnalyze.isNotEmpty()) {
@@ -556,12 +556,12 @@ internal object EscapeAnalysis {
 
                 DEBUG_OUTPUT(0) { println("Processing function $function") }
 
-                val startResult = escapeAnalysisResults[callGraph.directEdges[function]!!.symbol]!!
+                val startResult = escapeAnalysisResults[function]!!
 
                 DEBUG_OUTPUT(0) { println("Start escape analysis result:\n$startResult") }
 
                 analyze(callGraph, pointsToGraphs[function]!!, function)
-                val endResult = escapeAnalysisResults[callGraph.directEdges[function]!!.symbol]!!
+                val endResult = escapeAnalysisResults[function]!!
                 if (startResult == endResult) {
 
                     DEBUG_OUTPUT(0) { println("Escape analysis is not changed") }
@@ -577,8 +577,7 @@ internal object EscapeAnalysis {
                                     " Assuming conservative results.")
                         }
 
-                        escapeAnalysisResults[callGraph.directEdges[function]!!.symbol] =
-                                FunctionEscapeAnalysisResult.pessimistic(function.parameters.size)
+                        escapeAnalysisResults[function] = FunctionEscapeAnalysisResult.pessimistic(function.parameters.size)
                         nodes.remove(function)
                     }
 
@@ -639,11 +638,11 @@ internal object EscapeAnalysis {
         private fun arraySize(itemSize: Int, length: Int) =
                 pointerSize /* typeinfo */ + 4 /* size */ + itemSize * length
 
-        private fun analyze(callGraph: CallGraph, pointsToGraph: PointsToGraph, function: DataFlowIR.FunctionSymbol) {
+        private fun analyze(callGraph: CallGraph, pointsToGraph: PointsToGraph, function: DataFlowIR.FunctionSymbol.Declared) {
             DEBUG_OUTPUT(0) {
                 println("Before calls analysis")
                 pointsToGraph.print()
-                pointsToGraph.printDigraph()
+                pointsToGraph.printDigraph(false)
             }
 
             callGraph.directEdges[function]!!.callSites.forEach {
@@ -659,7 +658,7 @@ internal object EscapeAnalysis {
             DEBUG_OUTPUT(0) {
                 println("After calls analysis")
                 pointsToGraph.print()
-                pointsToGraph.printDigraph()
+                pointsToGraph.printDigraph(false)
             }
 
             // Build transitive closure.
@@ -668,10 +667,10 @@ internal object EscapeAnalysis {
             DEBUG_OUTPUT(0) {
                 println("After closure building")
                 pointsToGraph.print()
-                pointsToGraph.printDigraph()
+                pointsToGraph.printDigraph(true)
             }
 
-            escapeAnalysisResults[callGraph.directEdges[function]!!.symbol] = eaResult
+            escapeAnalysisResults[function] = eaResult
 
             totalGraphSize += eaResult.numberOfDrains + eaResult.escapes.size + eaResult.pointsTo.edges.size
         }
@@ -743,12 +742,8 @@ internal object EscapeAnalysis {
 
             private val fields = mutableMapOf<DataFlowIR.Field, PointsToGraphNode>()
 
-            fun getFieldNode(field: DataFlowIR.Field, graph: PointsToGraph) = fields.getOrPut(field) {
-                val node = PointsToGraphNode(NodeInfo(), null)
-                edges += PointsToGraphEdge(node, field)
-                graph.allNodes += node
-                node
-            }
+            fun getFieldNode(field: DataFlowIR.Field, graph: PointsToGraph) =
+                    fields.getOrPut(field) { graph.newNode().also { edges += PointsToGraphEdge(it, field) } }
 
             var depth = when {
                 node is DataFlowIR.Node.Parameter -> Depths.PARAMETER
@@ -765,13 +760,13 @@ internal object EscapeAnalysis {
 
             var forcedLifetime: Lifetime? = null
 
-            var drain: PointsToGraphNode? = null
+            lateinit var drain: PointsToGraphNode
 
-            val actualDrain: PointsToGraphNode?
+            val actualDrain: PointsToGraphNode
                 get() {
-                    var result = drain ?: return null
+                    var result = drain
                     while (result != result.drain)
-                        result = result.drain!!
+                        result = result.drain
                     return result
                 }
 
@@ -790,9 +785,14 @@ internal object EscapeAnalysis {
             val functionAnalysisResult = intraproceduralAnalysisResults[functionSymbol]!!
             val nodes = mutableMapOf<DataFlowIR.Node, PointsToGraphNode>()
 
-            val returnsNode = PointsToGraphNode(NodeInfo().also { it.data[Role.RETURN_VALUE] = RoleInfo() }, null)
-            val allNodes = mutableListOf(returnsNode)
+            val allNodes = mutableListOf<PointsToGraphNode>()
 
+            fun newNode(nodeInfo: NodeInfo, node: DataFlowIR.Node?) =
+                    PointsToGraphNode(nodeInfo, node).also { allNodes.add(it) }
+            fun newNode() = newNode(NodeInfo(), null)
+            fun newDrain() = newNode().also { it.drain = it }
+
+            val returnsNode = newNode(NodeInfo().also { it.data[Role.RETURN_VALUE] = RoleInfo() }, null)
 
             /*
              * Of all escaping nodes there are some "starting" - call them origins.
@@ -859,7 +859,7 @@ internal object EscapeAnalysis {
 
                     DEBUG_OUTPUT(0) { println("NODE ${nodeToString(node)}: $roles") }
 
-                    nodes[node] = PointsToGraphNode(roles, node).also { allNodes += it }
+                    nodes[node] = newNode(roles, node)
                 }
 
                 val returnValues = mutableListOf<DataFlowIR.Node>()
@@ -928,6 +928,7 @@ internal object EscapeAnalysis {
             }
 
             fun printDigraph(
+                    markDrains: Boolean,
                     nodeFilter: (PointsToGraphNode) -> Boolean = { true },
                     nodeLabel: ((PointsToGraphNode) -> String)? = null
             ) {
@@ -942,7 +943,7 @@ internal object EscapeAnalysis {
 
                 fun PointsToGraphNode.format() =
                         (nodeLabel?.invoke(this) ?:
-                        (if (drain == this) "d" else "") + (node?.let { "n${ids[it]!!}" } ?: "t${tempIds[this]}")) +
+                        (if (markDrains && drain == this) "d" else "") + (node?.let { "n${ids[it]!!}" } ?: "t${tempIds[this]}")) +
                                 "[d=$depth]"
 
                 for (from in allNodes) {
@@ -981,9 +982,7 @@ internal object EscapeAnalysis {
                                     }
                                 }
 
-                val drains = Array(calleeEscapeAnalysisResult.numberOfDrains) {
-                    PointsToGraphNode(NodeInfo(), null).also { allNodes += it }
-                }
+                val calleeDrains = Array(calleeEscapeAnalysisResult.numberOfDrains) { newNode() }
 
                 fun mapNode(compressedNode: CompressedPointsToGraph.Node): Pair<DataFlowIR.Node?, PointsToGraphNode?> {
                     val (arg, rootNode) = when (val kind = compressedNode.kind) {
@@ -993,7 +992,7 @@ internal object EscapeAnalysis {
                             else
                                 arguments.last() to nodes[arguments.last()]
                         is CompressedPointsToGraph.NodeKind.Param -> arguments[kind.index] to nodes[arguments[kind.index]]
-                        is CompressedPointsToGraph.NodeKind.Drain -> null to drains[kind.index]
+                        is CompressedPointsToGraph.NodeKind.Drain -> null to calleeDrains[kind.index]
                     }
                     if (rootNode == null)
                         return arg to rootNode
@@ -1060,13 +1059,15 @@ internal object EscapeAnalysis {
 
                 buildComponentsAndDrains()
 
-                DEBUG_OUTPUT(0) { printDigraph() }
+                DEBUG_OUTPUT(0) { printDigraph(true) }
 
                 computeLifetimes()
 
                 val (numberOfDrains, nodeIds) = paintInterestingNodes()
 
-                DEBUG_OUTPUT(0) { printDigraph({ nodeIds[it] != null }, { nodeIds[it].toString() }) }
+                DEBUG_OUTPUT(0) {
+                    printDigraph(true, { nodeIds[it] != null }, { nodeIds[it].toString() })
+                }
 
                 // TODO: Remove redundant edges.
                 val compressedEdges = mutableListOf<CompressedPointsToGraph.Edge>()
@@ -1102,14 +1103,13 @@ internal object EscapeAnalysis {
                 val drains = mutableListOf<PointsToGraphNode>()
                 val createdDrains = mutableSetOf<PointsToGraphNode>()
                 // Create drains.
-                for (node in allNodes) {
+                for (node in allNodes.toTypedArray() /* Copy as [allNodes] might change inside */) {
                     if (node in visited) continue
                     val component = mutableListOf<PointsToGraphNode>()
                     buildComponent(node, visited, component)
-                    val drain = trySelectDrain(component)
-                            ?: PointsToGraphNode(NodeInfo(), null).also { createdDrains += it }
+                    val drain = trySelectDrain(component)?.also { it.drain = it }
+                            ?: newDrain().also { createdDrains += it }
                     drains += drain
-                    drain.drain = drain
                     component.forEach {
                         if (it == drain) return@forEach
                         it.drain = drain
@@ -1155,8 +1155,8 @@ internal object EscapeAnalysis {
                         // Merge components: try to flip one drain to the other if possible,
                         // otherwise just create a new one.
 
-                        val firstDrain = first.actualDrain!!
-                        val secondDrain = second.actualDrain!!
+                        val firstDrain = first.actualDrain
+                        val secondDrain = second.actualDrain
                         when {
                             firstDrain == secondDrain -> continue
 
@@ -1172,8 +1172,7 @@ internal object EscapeAnalysis {
 
                             else -> {
                                 // Create a new drain in order to not create false constraints.
-                                val newDrain = PointsToGraphNode(NodeInfo(), null).also { createdDrains += it }
-                                newDrain.drain = newDrain
+                                val newDrain = newDrain().also { createdDrains += it }
                                 firstDrain.flipTo(newDrain)
                                 secondDrain.flipTo(newDrain)
                                 possibleDrains += newDrain
@@ -1185,7 +1184,6 @@ internal object EscapeAnalysis {
                         if (drain.drain == drain)
                             drains += drain
                 }
-                allNodes += createdDrains
 
                 // Compute current drains.
                 drains.clear()
@@ -1199,7 +1197,7 @@ internal object EscapeAnalysis {
                     val fields = mutableMapOf<DataFlowIR.Field, PointsToGraphNode>()
                     for (edge in drain.edges) {
                         val field = edge.field ?: error("A drain cannot have outgoing assignment edges!")
-                        val node = edge.node.actualDrain!!
+                        val node = edge.node.actualDrain
                         fields.getOrPut(field) { node }.also {
                             if (it != node) error("Drains have not been built correctly")
                         }
@@ -1208,7 +1206,7 @@ internal object EscapeAnalysis {
 
                 // Coalesce multi-edges.
                 for (drain in drains) {
-                    val actualDrain = drain.actualDrain!!
+                    val actualDrain = drain.actualDrain
                     val fields = actualDrain.edges.groupBy { edge ->
                         edge.field ?: error("A drain cannot have outgoing assignment edges")
                     }
@@ -1220,11 +1218,10 @@ internal object EscapeAnalysis {
                         }
                         val nextDrain = nodes.atMostOne { it.node.actualDrain == it.node }?.node?.actualDrain
                         if (nextDrain != null) {
-                            val newDrain = PointsToGraphNode(NodeInfo(), null).also { allNodes += it }
-                            newDrain.drain = newDrain
+                            val newDrain = newDrain()
                             nextDrain.flipTo(newDrain)
                         }
-                        val mergedNode = PointsToGraphNode(NodeInfo(), null).also { allNodes += it }
+                        val mergedNode = newNode()
                         nodes.forEach {
                             mergedNode.addAssignmentEdge(it.node)
                             it.node.addAssignmentEdge(mergedNode)
@@ -1237,7 +1234,7 @@ internal object EscapeAnalysis {
                 // Make sure every node within a component points to the component's drain.
                 drains.clear()
                 for (node in allNodes) {
-                    val drain = node.actualDrain!!
+                    val drain = node.actualDrain
                     node.drain = drain
                     if (node == drain)
                         drains += drain
@@ -1255,11 +1252,11 @@ internal object EscapeAnalysis {
             }
 
             // Drains, other than interesting, can be safely omitted from the result.
-            private fun findInterestingDrains(parameters: Array<PointsToGraphNode?>): Set<PointsToGraphNode> {
+            private fun findInterestingDrains(parameters: Array<PointsToGraphNode>): Set<PointsToGraphNode> {
                 // Starting with all reachable from the parameters.
                 val interestingDrains = mutableSetOf<PointsToGraphNode>()
                 for (param in parameters) {
-                    val drain = param!!.drain!!
+                    val drain = param.drain
                     if (drain !in interestingDrains)
                         findReachableDrains(drain, interestingDrains)
                 }
@@ -1275,7 +1272,7 @@ internal object EscapeAnalysis {
                 for (drain in interestingDrains) {
                     var count = 0
                     for (edge in drain.edges) {
-                        val nextDrain = edge.node.drain!!
+                        val nextDrain = edge.node.drain
                         reversedEdges[nextDrain]!! += drain to edge
                         if (nextDrain in interestingDrains)
                             ++count
@@ -1284,14 +1281,14 @@ internal object EscapeAnalysis {
                     if (count == 0)
                         leaves.push(drain)
                 }
-                val parameterDrains = parameters.map { it!!.drain!! }.toSet()
+                val parameterDrains = parameters.map { it.drain }.toSet()
                 while (leaves.isNotEmpty()) {
                     val drain = leaves.pop()
                     val incomingEdges = reversedEdges[drain]!!
                     if (incomingEdges.isEmpty()) {
                         if (drain !in parameterDrains)
                             error("A drain with no incoming edges")
-                        if (!parameters.any { it!!.drain == drain && escapes(it) })
+                        if (!parameters.any { it.drain == drain && escapes(it) })
                             interestingDrains.remove(drain)
                         continue
                     }
@@ -1311,23 +1308,36 @@ internal object EscapeAnalysis {
                 return interestingDrains
             }
 
-            private fun paintInterestingNodes(): Pair<Int, Map<PointsToGraphNode, CompressedPointsToGraph.Node>> {
-                val parameters = arrayOfNulls<PointsToGraphNode>(functionSymbol.parameters.size + 1)
+            private fun getParameterNodes(): Array<PointsToGraphNode> {
+                // Put a dummyNode in order to not bother with nullability. Then rewrite it with actual values.
+                val dummyNode = returnsNode // Anything will do.
+                val parameters = Array(functionSymbol.parameters.size + 1) { dummyNode }
+
                 // Parameters are declared in the root scope.
                 functionAnalysisResult.function.body.rootScope.nodes
                         .filterIsInstance<DataFlowIR.Node.Parameter>()
-                        .forEach { parameters[it.index] = nodes[it]!! }
+                        .forEach {
+                            if (parameters[it.index] != dummyNode)
+                                error("Two parameters with the same index ${it.index}: $it, ${parameters[it.index].node}")
+                            parameters[it.index] = nodes[it]!!
+                        }
                 parameters[functionSymbol.parameters.size] = returnsNode
+
+                return parameters
+            }
+
+            private fun paintInterestingNodes(): Pair<Int, Map<PointsToGraphNode, CompressedPointsToGraph.Node>> {
+                val parameters = getParameterNodes()
 
                 // Drains, other than interesting, can be safely omitted from the result.
                 val interestingDrains = findInterestingDrains(parameters)
 
                 val nodeIds = mutableMapOf<PointsToGraphNode, CompressedPointsToGraph.Node>()
                 for (index in parameters.indices)
-                    nodeIds[parameters[index]!!] = CompressedPointsToGraph.Node.parameter(index, parameters.size)
+                    nodeIds[parameters[index]] = CompressedPointsToGraph.Node.parameter(index, parameters.size)
 
                 var drainIndex = 0
-                var front = parameters.map { it!! }
+                var front = parameters.map { it }
                 while (front.isNotEmpty()) {
                     val nextFront = mutableSetOf<PointsToGraphNode>()
                     for (node in front) {
@@ -1371,9 +1381,9 @@ internal object EscapeAnalysis {
 
                 fun addAdditionalEscapeOrigins(escapingNodes: List<PointsToGraphNode>, direction: EdgeDirection) {
                     escapingNodes
-                            .groupBy { it.drain!! }
+                            .groupBy { it.drain }
                             .forEach { (drain, nodes) ->
-                                val tempNode = PointsToGraphNode(NodeInfo(), null).also { allNodes += it }
+                                val tempNode = newNode()
                                 nodeIds[tempNode] = CompressedPointsToGraph.Node.drain(drainIndex++)
                                 tempNode.drain = drain
                                 tempNode.addAssignmentEdge(drain)
@@ -1406,55 +1416,39 @@ internal object EscapeAnalysis {
                 // can't hold both values simultaneously, but two references can hold the same value
                 // at the same time, that's the difference.
                 val connectedNodes = mutableSetOf<Pair<PointsToGraphNode, PointsToGraphNode>>()
-                for (node in allNodes) {
-                    if (nodeIds[node] == null) continue
-                    val drain = node.drain!!
-                    if (nodeIds[drain] != null) continue // If the drain hasn't been optimized away - nothing to do.
-                    val referencingNodes = findReferencing(node).toList()
-                    for (i in referencingNodes.indices) {
-                        val firstNode = referencingNodes[i]
-                        if (nodeIds[firstNode] == null) continue
-                        for (j in i + 1 until referencingNodes.size) {
-                            val secondNode = referencingNodes[j]
-                            if (nodeIds[secondNode] == null) continue
-                            if (firstNode.edges.any { it.node == secondNode }
-                                    || secondNode.edges.any { it.node == firstNode })
-                                continue
-                            connectedNodes.add(Pair(firstNode, secondNode))
-                            connectedNodes.add(Pair(secondNode, firstNode))
+                allNodes.filter { nodeIds[it] != null && nodeIds[it.drain] == null /* The drain has been optimized away */ }
+                        .forEach { node ->
+                            val referencingNodes = findReferencing(node).filter { nodeIds[it] != null }
+                            for (i in referencingNodes.indices)
+                                for (j in i + 1 until referencingNodes.size) {
+                                    val firstNode = referencingNodes[i]
+                                    val secondNode = referencingNodes[j]
+                                    connectedNodes.add(Pair(firstNode, secondNode))
+                                    connectedNodes.add(Pair(secondNode, firstNode))
+                                }
                         }
-                    }
-                }
-                val additionalDrains = mutableListOf<PointsToGraphNode>()
-                for (node in allNodes) {
-                    if (nodeIds[node] != null) continue
-                    val drain = node.drain!!
-                    if (drain !in interestingDrains) continue
-                    if (nodeIds[drain] != null) continue // If the drain hasn't been optimized away - nothing to do.
-                    val referencingNodes = findReferencing(node).toList()
-                    for (i in referencingNodes.indices) {
-                        val firstNode = referencingNodes[i]
-                        if (nodeIds[firstNode] == null) continue
-                        for (j in i + 1 until referencingNodes.size) {
-                            val secondNode = referencingNodes[j]
-                            if (nodeIds[secondNode] == null) continue
-                            val pair = Pair(firstNode, secondNode)
-                            if (pair in connectedNodes) continue
-                            if (firstNode.edges.any { it.node == secondNode }
-                                    || secondNode.edges.any { it.node == firstNode })
-                                continue
-                            val additionalDrain = PointsToGraphNode(NodeInfo(), null).also { additionalDrains += it }
-                            // For consistency.
-                            additionalDrain.depth = min(firstNode.depth, secondNode.depth)
-                            firstNode.addAssignmentEdge(additionalDrain)
-                            secondNode.addAssignmentEdge(additionalDrain)
-                            nodeIds[additionalDrain] = CompressedPointsToGraph.Node.drain(drainIndex++)
-                            connectedNodes.add(pair)
-                            connectedNodes.add(Pair(secondNode, firstNode))
+                allNodes.filter { nodeIds[it] == null && it.drain in interestingDrains && nodeIds[it.drain] == null }
+                        .forEach { node ->
+                            val referencingNodes = findReferencing(node).filter { nodeIds[it] != null }
+                            for (i in referencingNodes.indices)
+                                for (j in i + 1 until referencingNodes.size) {
+                                    val firstNode = referencingNodes[i]
+                                    val secondNode = referencingNodes[j]
+                                    val pair = Pair(firstNode, secondNode)
+                                    if (pair in connectedNodes) continue
+
+                                    // It is not an actual drain, but a temporary node to reflect the found constraint.
+                                    val additionalDrain = newDrain()
+                                    // For consistency.
+                                    additionalDrain.depth = min(firstNode.depth, secondNode.depth)
+
+                                    firstNode.addAssignmentEdge(additionalDrain)
+                                    secondNode.addAssignmentEdge(additionalDrain)
+                                    nodeIds[additionalDrain] = CompressedPointsToGraph.Node.drain(drainIndex++)
+                                    connectedNodes.add(pair)
+                                    connectedNodes.add(Pair(secondNode, firstNode))
+                                }
                         }
-                    }
-                }
-                allNodes += additionalDrains
 
                 return Pair(drainIndex, nodeIds)
             }
@@ -1665,7 +1659,7 @@ internal object EscapeAnalysis {
                 for (edge in drain.edges) {
                     if (edge.isAssignment)
                         error("A drain cannot have outgoing assignment edges")
-                    val nextDrain = edge.node.drain!!
+                    val nextDrain = edge.node.drain
                     if (nextDrain !in visitedDrains)
                         findReachableDrains(nextDrain, visitedDrains)
                 }
@@ -1678,7 +1672,7 @@ internal object EscapeAnalysis {
                     nodeIds: MutableMap<PointsToGraphNode, CompressedPointsToGraph.Node>,
                     seenNotPaintedDrains: MutableSet<PointsToGraphNode>
             ) {
-                val drain = node.drain!!
+                val drain = node.drain
                 if (node != drain) {
                     if (nodeIds[drain] == null
                             // A little optimization - skip leaf drains.
@@ -1689,7 +1683,7 @@ internal object EscapeAnalysis {
                 for (edge in drain.edges) {
                     val field = edge.field!!
                     val nextNode = edge.node
-                    val nextDrain = nextNode.drain!!
+                    val nextDrain = nextNode.drain
                     if (nextDrain in interestingDrains
                             && nextNode != drain /* Skip loops */) {
                         if (nodeIds[nextNode] != null)
