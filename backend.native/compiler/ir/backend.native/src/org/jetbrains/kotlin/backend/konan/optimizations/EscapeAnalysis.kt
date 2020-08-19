@@ -943,8 +943,9 @@ internal object EscapeAnalysis {
 
                 fun PointsToGraphNode.format() =
                         (nodeLabel?.invoke(this) ?:
-                        (if (markDrains && drain == this) "d" else "") + (node?.let { "n${ids[it]!!}" } ?: "t${tempIds[this]}")) +
-                                "[d=$depth]"
+                        (if (markDrains && drain == this) "d" else "")
+                        + (node?.let { "n${ids[it]!!}" } ?: "t${tempIds[this]}")) +
+                                "[d=$depth,${if (this in escapeOrigins) "eo" else if (escapes(this)) "e" else ""}]"
 
                 for (from in allNodes) {
                     if (!nodeFilter(from)) continue
@@ -1232,23 +1233,12 @@ internal object EscapeAnalysis {
                 }
 
                 // Make sure every node within a component points to the component's drain.
-                drains.clear()
                 for (node in allNodes) {
                     val drain = node.actualDrain
                     node.drain = drain
-                    if (node == drain)
-                        drains += drain
-                    else
+                    if (node != drain)
                         node.addAssignmentEdge(drain)
                 }
-
-                // Rebuild reversedEdges.
-                for (node in allNodes)
-                    node.reversedEdges.clear()
-                for (node in allNodes)
-                    for (edge in node.edges)
-                        if (edge.isAssignment)
-                            edge.node.reversedEdges += PointsToGraphEdge(node, null)
             }
 
             // Drains, other than interesting, can be safely omitted from the result.
@@ -1585,51 +1575,51 @@ internal object EscapeAnalysis {
 
                 val stackArrayCandidates = mutableListOf<ArrayStaticAllocation>()
                 for ((node, ptgNode) in nodes) {
-                    node.ir?.let {
-                        val computedLifetime = lifetimeOf(node)
-                        var lifetime = computedLifetime
+                    if (node.ir == null) continue
 
-                        if (lifetime != Lifetime.STACK) {
-                            // TODO: Support other lifetimes - requires arenas.
-                            lifetime = Lifetime.GLOBAL
-                        }
+                    val computedLifetime = lifetimeOf(node)
+                    var lifetime = computedLifetime
 
-                        if (lifetime == Lifetime.STACK && node is DataFlowIR.Node.NewObject) {
-                            val constructedType = node.constructedType.resolved()
-                            constructedType.irClass?.let { irClass ->
-                                val itemSize = arrayItemSizeOf(irClass)
-                                if (itemSize != null) {
-                                    val sizeArgument = node.arguments.first().node
-                                    val arrayLength = arrayLengthOf(sizeArgument)
-                                    if (arrayLength != null) {
-                                        stackArrayCandidates +=
-                                                ArrayStaticAllocation(ptgNode, irClass, arraySize(itemSize, arrayLength))
-                                    } else {
-                                        // Can be placed into the local arena.
-                                        // TODO. Support Lifetime.LOCAL
-                                        lifetime = Lifetime.GLOBAL
-                                    }
+                    if (lifetime != Lifetime.STACK) {
+                        // TODO: Support other lifetimes - requires arenas.
+                        lifetime = Lifetime.GLOBAL
+                    }
+
+                    if (lifetime == Lifetime.STACK && node is DataFlowIR.Node.NewObject) {
+                        val constructedType = node.constructedType.resolved()
+                        constructedType.irClass?.let { irClass ->
+                            val itemSize = arrayItemSizeOf(irClass)
+                            if (itemSize != null) {
+                                val sizeArgument = node.arguments.first().node
+                                val arrayLength = arrayLengthOf(sizeArgument)
+                                if (arrayLength != null) {
+                                    stackArrayCandidates +=
+                                            ArrayStaticAllocation(ptgNode, irClass, arraySize(itemSize, arrayLength))
+                                } else {
+                                    // Can be placed into the local arena.
+                                    // TODO. Support Lifetime.LOCAL
+                                    lifetime = Lifetime.GLOBAL
                                 }
-                            }
-                        }
-
-                        if (lifetime != computedLifetime) {
-                            if (propagateExiledToHeapObjects && node.isAlloc) {
-
-                                DEBUG_OUTPUT(0) {
-                                    println("Forcing node ${nodeToString(node)} to escape")
-                                }
-
-                                escapeOrigins += ptgNode
-                                propagateEscapeOrigin(ptgNode)
-                            } else {
-                                ptgNode.forcedLifetime = lifetime
                             }
                         }
                     }
-                }
-                stackArrayCandidates.sortBy { it.size }
 
+                    if (lifetime != computedLifetime) {
+                        if (propagateExiledToHeapObjects && node.isAlloc) {
+
+                            DEBUG_OUTPUT(0) {
+                                println("Forcing node ${nodeToString(node)} to escape")
+                            }
+
+                            escapeOrigins += ptgNode
+                            propagateEscapeOrigin(ptgNode)
+                        } else {
+                            ptgNode.forcedLifetime = lifetime
+                        }
+                    }
+                }
+
+                stackArrayCandidates.sortBy { it.size }
                 // TODO: To a setting?
                 var allowedToAlloc = 65536
                 for ((ptgNode, irClass, size) in stackArrayCandidates) {
