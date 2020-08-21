@@ -1326,6 +1326,13 @@ internal object EscapeAnalysis {
                 for (index in parameters.indices)
                     nodeIds[parameters[index]] = CompressedPointsToGraph.Node.parameter(index, parameters.size)
 
+                val standAloneDrains = interestingDrains.toMutableSet()
+                for (drain in interestingDrains)
+                    for (edge in drain.edges) {
+                        val node = edge.node
+                        if (edge.field != null && node.drain == node)
+                            standAloneDrains.remove(node)
+                    }
                 var drainIndex = 0
                 var front = parameters.map { it }
                 while (front.isNotEmpty()) {
@@ -1334,9 +1341,13 @@ internal object EscapeAnalysis {
                         paintNodes(node, nodeIds[node]!!.kind, mutableListOf(),
                                 interestingDrains, nodeIds, nextFront)
                     }
-                    front = nextFront.filter { nodeIds[it] == null }.toList()
+                    front = nextFront.filter { nodeIds[it] == null && it in standAloneDrains }.toList()
                     for (node in front)
                         nodeIds[node] = CompressedPointsToGraph.Node.drain(drainIndex++)
+                }
+                for (drain in interestingDrains) {
+                    if (nodeIds[drain] == null && drain.edges.any { it.node.drain in interestingDrains })
+                        error("Drains have not been painted properly")
                 }
 
                 buildComponentsClosures(nodeIds)
