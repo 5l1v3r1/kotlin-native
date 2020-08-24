@@ -763,11 +763,11 @@ internal object EscapeAnalysis {
             lateinit var drain: PointsToGraphNode
 
             val actualDrain: PointsToGraphNode
-                get() {
-                    var result = drain
-                    while (result != result.drain)
-                        result = result.drain
-                    return result
+                get() = drain.let {
+                    if (it.drain == it) it
+                    // Flip to the real drain as it is done in the disjoint sets algorithm,
+                    // to reduce the time spent in this function.
+                    else it.actualDrain.also { drain = it }
                 }
 
             val beingReturned get() = nodeInfo.has(Role.RETURN_VALUE)
@@ -1217,18 +1217,18 @@ internal object EscapeAnalysis {
                             actualDrain.edges += nodes[0]
                             continue
                         }
-                        val nextDrain = nodes.atMostOne { it.node.actualDrain == it.node }?.node?.actualDrain
-                        if (nextDrain != null) {
-                            val newDrain = newDrain()
-                            nextDrain.flipTo(newDrain)
+                        // All nodes in [nodes] must be connected to each other, but a drain, by definition,
+                        // cannot have outgoing assignment edges, thus a new drain must be created here.
+                        nodes.atMostOne { it.node.actualDrain == it.node }
+                                ?.node?.actualDrain?.flipTo(newDrain())
+
+                        for (i in nodes.indices) {
+                            val firstNode = nodes[i].node
+                            val secondNode = if (i == nodes.size - 1) nodes[0].node else nodes[i + 1].node
+                            firstNode.addAssignmentEdge(secondNode)
                         }
-                        val mergedNode = newNode()
-                        nodes.forEach {
-                            mergedNode.addAssignmentEdge(it.node)
-                            it.node.addAssignmentEdge(mergedNode)
-                        }
-                        actualDrain.edges += PointsToGraphEdge(mergedNode, nodes[0].field)
-                        mergedNode.drain = nodes[0].node.drain
+                        // Can pick any.
+                        actualDrain.edges += PointsToGraphEdge(nodes[0].node, nodes[0].field)
                     }
                 }
 
@@ -1341,7 +1341,7 @@ internal object EscapeAnalysis {
                         paintNodes(node, nodeIds[node]!!.kind, mutableListOf(),
                                 interestingDrains, nodeIds, nextFront)
                     }
-                    front = nextFront.filter { nodeIds[it] == null && it in standAloneDrains }.toList()
+                    front = nextFront.filter { nodeIds[it] == null && it in standAloneDrains }
                     for (node in front)
                         nodeIds[node] = CompressedPointsToGraph.Node.drain(drainIndex++)
                 }
