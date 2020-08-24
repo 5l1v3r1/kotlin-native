@@ -501,11 +501,11 @@ MODEL_VARIANTS(void, SetStackRef, ObjHeader** location, const ObjHeader* object)
 // Sets heap location.
 MODEL_VARIANTS(void, SetHeapRef, ObjHeader** location, const ObjHeader* object);
 // Zeroes heap location.
-void ZeroHeapRef(ObjHeader** location);
+void ZeroHeapRef(ObjHeader** location) RUNTIME_NOTHROW;
+// Zeroes an array.
+void ZeroArrayRefs(ArrayHeader* array) RUNTIME_NOTHROW;
 // Zeroes stack location.
 MODEL_VARIANTS(void, ZeroStackRef, ObjHeader** location);
-// Zeroes an array.
-MODEL_VARIANTS(void, ZeroArrayRefs, ArrayHeader* array);
 // Updates stack location.
 MODEL_VARIANTS(void, UpdateStackRef, ObjHeader** location, const ObjHeader* object);
 // Updates heap/static data location.

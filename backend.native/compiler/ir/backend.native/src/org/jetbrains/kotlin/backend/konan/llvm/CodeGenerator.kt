@@ -269,7 +269,7 @@ internal class StackLocalsManagerImpl(
                     if (refsOnly)
                         storeHeapRef(kNullObjHeaderPtr, fieldPtr)
                     else
-                        call(context.llvm.releaseHeapRefFunction, listOf(LLVMBuildLoad(builder, fieldPtr, "")!!))
+                        call(context.llvm.zeroHeapRefFunction, listOf(fieldPtr))
                 }
             }
 

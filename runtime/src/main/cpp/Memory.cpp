@@ -2099,14 +2099,6 @@ void updateHeapRefIfNull(ObjHeader** location, const ObjHeader* object) {
   }
 }
 
-template <bool Strict>
-void zeroArrayRefs(ArrayHeader* array) {
-  for (int index = 0; index < array->count_; ++index) {
-    ObjHeader** location = ArrayAddressOfElementAt(array, index);
-    updateHeapRef<Strict>(location, nullptr);
-  }
-}
-
 inline void checkIfGcNeeded(MemoryState* state) {
   if (state != nullptr && state->allocSinceLastGc > state->allocSinceLastGcThreshold) {
     // To avoid GC trashing check that at least 10ms passed since last GC.
@@ -3239,11 +3231,11 @@ void UpdateReturnRefRelaxed(ObjHeader** returnSlot, const ObjHeader* value) {
   updateReturnRef<false>(returnSlot, value);
 }
 
-void ZeroArrayRefsStrict(ArrayHeader* array) {
-  zeroArrayRefs<true>(array);
-}
-void ZeroArrayRefsRelaxed(ArrayHeader* array) {
-  zeroArrayRefs<false>(array);
+void ZeroArrayRefs(ArrayHeader* array) {
+  for (int index = 0; index < array->count_; ++index) {
+    ObjHeader** location = ArrayAddressOfElementAt(array, index);
+    zeroHeapRef(location);
+  }
 }
 
 void UpdateHeapRefIfNull(ObjHeader** location, const ObjHeader* object) {
