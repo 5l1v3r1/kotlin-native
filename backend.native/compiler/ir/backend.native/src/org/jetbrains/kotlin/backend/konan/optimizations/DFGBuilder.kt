@@ -62,7 +62,7 @@ private class VariableValues {
     }
 
     fun add(variable: IrVariable, element: IrExpression) =
-            elementData[variable]!!.values.add(element)
+            elementData[variable]?.values?.add(element)
 
     private fun add(variable: IrVariable, elements: Set<IrExpression>) =
             elementData[variable]?.values?.addAll(elements)

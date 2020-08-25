@@ -720,23 +720,25 @@ internal object EscapeAnalysis {
             RETURN_VALUE
         }
 
-        private class PointsToGraphEdge(val node: PointsToGraphNode, val field: DataFlowIR.Field?) {
-            val isAssignment get() = field == null
+        private sealed class PointsToGraphEdge(val node: PointsToGraphNode) {
+            class Assignment(node: PointsToGraphNode) : PointsToGraphEdge(node)
+
+            class Field(node: PointsToGraphNode, val field: DataFlowIR.Field) : PointsToGraphEdge(node)
         }
 
         private class PointsToGraphNode(val nodeInfo: NodeInfo, val node: DataFlowIR.Node?) {
             val edges = mutableListOf<PointsToGraphEdge>()
-            val reversedEdges = mutableListOf<PointsToGraphEdge>()
+            val reversedEdges = mutableListOf<PointsToGraphEdge.Assignment>()
 
             fun addAssignmentEdge(to: PointsToGraphNode) {
-                edges += PointsToGraphEdge(to, null)
-                to.reversedEdges += PointsToGraphEdge(this, null)
+                edges += PointsToGraphEdge.Assignment(to)
+                to.reversedEdges += PointsToGraphEdge.Assignment(this)
             }
 
             private val fields = mutableMapOf<DataFlowIR.Field, PointsToGraphNode>()
 
             fun getFieldNode(field: DataFlowIR.Field, graph: PointsToGraph) =
-                    fields.getOrPut(field) { graph.newNode().also { edges += PointsToGraphEdge(it, field) } }
+                    fields.getOrPut(field) { graph.newNode().also { edges += PointsToGraphEdge.Field(it, field) } }
 
             var depth = when {
                 node is DataFlowIR.Node.Parameter -> Depths.PARAMETER
@@ -945,11 +947,12 @@ internal object EscapeAnalysis {
                     for (it in from.edges) {
                         val to = it.node
                         if (!nodeFilter(to)) continue
-                        val field = it.field
-                        if (field == null)
-                            println("    \"${from.format()}\" -> \"${to.format()}\";")
-                        else
-                            println("    \"${from.format()}\" -> \"${to.format()}\" [ label=\"${field.name}\"];")
+                        when (it) {
+                            is PointsToGraphEdge.Assignment ->
+                                println("    \"${from.format()}\" -> \"${to.format()}\";")
+                            is PointsToGraphEdge.Field ->
+                                println("    \"${from.format()}\" -> \"${to.format()}\" [ label=\"${it.field.name}\"];")
+                        }
                     }
                 }
                 println("}")
@@ -1072,10 +1075,16 @@ internal object EscapeAnalysis {
                         escapingNodes += fromCompressedNode
                     for (edge in from.edges) {
                         val toCompressedNode = nodeIds[edge.node] ?: continue
-                        val isALoop = edge.node == from && edge.field != null
-                        if (edge.isAssignment || isALoop)
-                            compressedEdges += CompressedPointsToGraph.Edge(
-                                    fromCompressedNode.goto(edge.field), toCompressedNode)
+                        when (edge) {
+                            is PointsToGraphEdge.Assignment ->
+                                compressedEdges += CompressedPointsToGraph.Edge(fromCompressedNode, toCompressedNode)
+
+                            is PointsToGraphEdge.Field ->
+                                if (edge.node == from /* A loop */) {
+                                    compressedEdges += CompressedPointsToGraph.Edge(
+                                            fromCompressedNode.goto(edge.field), toCompressedNode)
+                                }
+                        }
                     }
                 }
 
@@ -1109,7 +1118,7 @@ internal object EscapeAnalysis {
                         it.drain = drain
                         val assignmentEdges = mutableListOf<PointsToGraphEdge>()
                         for (edge in it.edges) {
-                            if (edge.isAssignment)
+                            if (edge is PointsToGraphEdge.Assignment)
                                 assignmentEdges += edge
                             else
                                 drain.edges += edge
@@ -1131,7 +1140,8 @@ internal object EscapeAnalysis {
                     val toMerge = mutableListOf<Pair<PointsToGraphNode, PointsToGraphNode>>()
                     for (drain in drains) {
                         val fields = drain.edges.groupBy { edge ->
-                            edge.field ?: error("A drain cannot have outgoing assignment edges")
+                            (edge as? PointsToGraphEdge.Field)?.field
+                                    ?: error("A drain cannot have outgoing assignment edges")
                         }
                         for (nodes in fields.values) {
                             if (nodes.size == 1) continue
@@ -1190,7 +1200,8 @@ internal object EscapeAnalysis {
                 for (drain in drains) {
                     val fields = mutableMapOf<DataFlowIR.Field, PointsToGraphNode>()
                     for (edge in drain.edges) {
-                        val field = edge.field ?: error("A drain cannot have outgoing assignment edges!")
+                        val field = (edge as? PointsToGraphEdge.Field)?.field
+                                ?: error("A drain cannot have outgoing assignment edges")
                         val node = edge.node.actualDrain
                         fields.getOrPut(field) { node }.also {
                             if (it != node) error("Drains have not been built correctly")
@@ -1202,7 +1213,8 @@ internal object EscapeAnalysis {
                 for (drain in drains) {
                     val actualDrain = drain.actualDrain
                     val fields = actualDrain.edges.groupBy { edge ->
-                        edge.field ?: error("A drain cannot have outgoing assignment edges")
+                        (edge as? PointsToGraphEdge.Field)?.field
+                                ?: error("A drain cannot have outgoing assignment edges")
                     }
                     actualDrain.edges.clear()
                     for (nodes in fields.values) {
@@ -1221,7 +1233,7 @@ internal object EscapeAnalysis {
                             firstNode.addAssignmentEdge(secondNode)
                         }
                         // Can pick any.
-                        actualDrain.edges += PointsToGraphEdge(nodes[0].node, nodes[0].field)
+                        actualDrain.edges += nodes[0]
                     }
                 }
 
@@ -1450,7 +1462,7 @@ internal object EscapeAnalysis {
 
             private fun trySelectDrain(component: MutableList<PointsToGraphNode>) =
                     component.firstOrNull { node ->
-                        if (node.edges.any { edge -> edge.isAssignment })
+                        if (node.edges.any { it is PointsToGraphEdge.Assignment })
                             false
                         else
                             findReferencing(node).size == component.size
@@ -1464,11 +1476,11 @@ internal object EscapeAnalysis {
                 visited += node
                 component += node
                 for (edge in node.edges) {
-                    if (edge.isAssignment && edge.node !in visited)
+                    if (edge is PointsToGraphEdge.Assignment && edge.node !in visited)
                         buildComponent(edge.node, visited, component)
                 }
                 for (edge in node.reversedEdges) {
-                    if (edge.isAssignment && edge.node !in visited)
+                    if (edge.node !in visited)
                         buildComponent(edge.node, visited, component)
                 }
             }
@@ -1479,7 +1491,7 @@ internal object EscapeAnalysis {
                 visited += node
                 node.edges.forEach {
                     val next = it.node
-                    if ((it.isAssignment || !assignmentOnly)
+                    if ((it is PointsToGraphEdge.Assignment || !assignmentOnly)
                             && next !in visited && nodeIds?.containsKey(next) != false)
                         findReachable(next, visited, assignmentOnly, nodeIds)
                 }
@@ -1637,7 +1649,7 @@ internal object EscapeAnalysis {
             private fun findReachableDrains(drain: PointsToGraphNode, visitedDrains: MutableSet<PointsToGraphNode>) {
                 visitedDrains += drain
                 for (edge in drain.edges) {
-                    if (edge.isAssignment)
+                    if (edge is PointsToGraphEdge.Assignment)
                         error("A drain cannot have outgoing assignment edges")
                     val nextDrain = edge.node.drain
                     if (nextDrain !in visitedDrains)
@@ -1659,7 +1671,7 @@ internal object EscapeAnalysis {
                 for (drain in interestingDrains)
                     for (edge in drain.edges) {
                         val node = edge.node
-                        if (edge.field != null && node.drain == node && node != drain /* Skip loops */)
+                        if (node.drain == node && node != drain /* Skip loops */)
                             standAloneDrains.remove(node)
                     }
                 for (drain in standAloneDrains) {
@@ -1675,7 +1687,7 @@ internal object EscapeAnalysis {
                     for (node in front) {
                         val nodeId = nodeIds[node]!!
                         for (edge in node.edges) {
-                            val field = edge.field ?: continue
+                            val field = (edge as? PointsToGraphEdge.Field)?.field ?: continue
                             val nextNode = edge.node
                             if (nextNode.drain in interestingDrains && nextNode != node /* Skip loops */) {
                                 val nextNodeId = nodeId.goto(field)
