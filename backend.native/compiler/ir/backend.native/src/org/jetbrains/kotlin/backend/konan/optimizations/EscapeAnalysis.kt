@@ -1317,57 +1317,23 @@ internal object EscapeAnalysis {
             }
 
             private fun paintInterestingNodes(): Pair<Int, Map<PointsToGraphNode, CompressedPointsToGraph.Node>> {
+                var drainsCount = 0
+                val drainFactory = { CompressedPointsToGraph.Node.drain(drainsCount++) }
+
                 val parameters = getParameterNodes()
-
-                // Drains, other than interesting, can be safely omitted from the result.
                 val interestingDrains = findInterestingDrains(parameters)
-
-                val nodeIds = mutableMapOf<PointsToGraphNode, CompressedPointsToGraph.Node>()
-                for (index in parameters.indices)
-                    nodeIds[parameters[index]] = CompressedPointsToGraph.Node.parameter(index, parameters.size)
-
-                val standAloneDrains = interestingDrains.toMutableSet()
-                for (drain in interestingDrains)
-                    for (edge in drain.edges) {
-                        val node = edge.node
-                        if (edge.field != null && node.drain == node && node != drain /* Skip loops */)
-                            standAloneDrains.remove(node)
-                    }
-
-                var drainIndex = 0
-                for (drain in standAloneDrains) {
-                    if (nodeIds[drain] == null
-                            // A little optimization - skip leaf drains.
-                            && drain.edges.any { it.node.drain in interestingDrains })
-                        nodeIds[drain] = CompressedPointsToGraph.Node.drain(drainIndex++)
-                }
-                var front = nodeIds.keys.toList()
-                while (front.isNotEmpty()) {
-                    val nextFront = mutableListOf<PointsToGraphNode>()
-                    for (node in front) {
-                        val nodeId = nodeIds[node]!!
-                        for (edge in node.edges) {
-                            val field = edge.field ?: continue
-                            val nextNode = edge.node
-                            if (nextNode.drain in interestingDrains && nextNode != node /* Skip loops */) {
-                                val nextNodeId = nodeId.goto(field)
-                                if (nodeIds[nextNode] != null)
-                                    error("Expected only one incoming field edge. ${nodeIds[nextNode]} != $nextNodeId")
-                                nodeIds[nextNode] = nextNodeId
-                                if (nextNode.drain == nextNode)
-                                    nextFront += nextNode
-                            }
-                        }
-                    }
-                    front = nextFront
-                }
-                for (drain in interestingDrains) {
-                    if (nodeIds[drain] == null && drain.edges.any { it.node.drain in interestingDrains })
-                        error("Drains have not been painted properly")
-                }
-
+                val nodeIds = paintNodes(parameters, interestingDrains, drainFactory)
                 buildComponentsClosures(nodeIds)
+                handleNotTakenEscapeOrigins(nodeIds, drainFactory)
+                restoreOptimizedAwayDrainsIfNeeded(interestingDrains, nodeIds, drainFactory)
 
+                return Pair(drainsCount, nodeIds)
+            }
+
+            private fun handleNotTakenEscapeOrigins(
+                    nodeIds: MutableMap<PointsToGraphNode, CompressedPointsToGraph.Node>,
+                    drainFactory: () -> CompressedPointsToGraph.Node
+            ) {
                 // We've marked reachable nodes from the parameters, also taking some of the escape origins.
                 // But there might be some escape origins that are not taken, yet referencing some of the
                 // marked nodes. Do the following: find all escaping nodes only taking marked escape origins
@@ -1384,10 +1350,10 @@ internal object EscapeAnalysis {
                     if (nodeIds[escapeOrigin] == null) {
                         if (escapeOrigin !in reachableFromNotTakenEscapeOrigins)
                             findReachableFringe(escapeOrigin, reachableFromNotTakenEscapeOrigins,
-                                                reachableFringeFromNotTakenEscapeOrigins, nodeIds)
+                                    reachableFringeFromNotTakenEscapeOrigins, nodeIds)
                         if (escapeOrigin !in referencingNotTakenEscapeOrigins)
                             findReferencingFringe(escapeOrigin, referencingNotTakenEscapeOrigins,
-                                                  fringeReferencingNotTakenEscapeOrigins, nodeIds)
+                                    fringeReferencingNotTakenEscapeOrigins, nodeIds)
                     } else {
                         if (escapeOrigin !in reachableFromTakenEscapeOrigins)
                             findReachable(escapeOrigin, reachableFromTakenEscapeOrigins, false, null)
@@ -1401,7 +1367,7 @@ internal object EscapeAnalysis {
                             .groupBy { it.drain }
                             .forEach { (drain, nodes) ->
                                 val tempNode = newNode()
-                                nodeIds[tempNode] = CompressedPointsToGraph.Node.drain(drainIndex++)
+                                nodeIds[tempNode] = drainFactory()
                                 tempNode.drain = drain
                                 tempNode.addAssignmentEdge(drain)
                                 escapeOrigins += tempNode
@@ -1423,7 +1389,13 @@ internal object EscapeAnalysis {
                                 .filterNot { it in referencingTakenEscapeOrigins },
                         EdgeDirection.BACKWARD
                 )
+            }
 
+            private fun restoreOptimizedAwayDrainsIfNeeded(
+                    interestingDrains: Set<PointsToGraphNode>,
+                    nodeIds: MutableMap<PointsToGraphNode, CompressedPointsToGraph.Node>,
+                    drainFactory: () -> CompressedPointsToGraph.Node
+            ) {
                 // Here we try to find this subgraph within one component: [v -> d; w -> d; v !-> w; w !-> v].
                 // In most cases such a node [d] is just the drain of the component,
                 // but it may have been optimized away.
@@ -1461,13 +1433,11 @@ internal object EscapeAnalysis {
 
                                     firstNode.addAssignmentEdge(additionalDrain)
                                     secondNode.addAssignmentEdge(additionalDrain)
-                                    nodeIds[additionalDrain] = CompressedPointsToGraph.Node.drain(drainIndex++)
+                                    nodeIds[additionalDrain] = drainFactory()
                                     connectedNodes.add(pair)
                                     connectedNodes.add(Pair(secondNode, firstNode))
                                 }
                         }
-
-                return Pair(drainIndex, nodeIds)
             }
 
             private fun findReferencing(node: PointsToGraphNode, visited: MutableSet<PointsToGraphNode>) {
@@ -1680,6 +1650,58 @@ internal object EscapeAnalysis {
                     if (nextDrain !in visitedDrains)
                         findReachableDrains(nextDrain, visitedDrains)
                 }
+            }
+
+            private fun paintNodes(
+                    parameters: Array<PointsToGraphNode>,
+                    interestingDrains: Set<PointsToGraphNode>,
+                    drainFactory: () -> CompressedPointsToGraph.Node
+            ): MutableMap<PointsToGraphNode, CompressedPointsToGraph.Node> {
+                val nodeIds = mutableMapOf<PointsToGraphNode, CompressedPointsToGraph.Node>()
+
+                for (index in parameters.indices)
+                    nodeIds[parameters[index]] = CompressedPointsToGraph.Node.parameter(index, parameters.size)
+
+                val standAloneDrains = interestingDrains.toMutableSet()
+                for (drain in interestingDrains)
+                    for (edge in drain.edges) {
+                        val node = edge.node
+                        if (edge.field != null && node.drain == node && node != drain /* Skip loops */)
+                            standAloneDrains.remove(node)
+                    }
+                for (drain in standAloneDrains) {
+                    if (nodeIds[drain] == null
+                            // A little optimization - skip leaf drains.
+                            && drain.edges.any { it.node.drain in interestingDrains })
+                        nodeIds[drain] = drainFactory()
+                }
+
+                var front = nodeIds.keys.toList()
+                while (front.isNotEmpty()) {
+                    val nextFront = mutableListOf<PointsToGraphNode>()
+                    for (node in front) {
+                        val nodeId = nodeIds[node]!!
+                        for (edge in node.edges) {
+                            val field = edge.field ?: continue
+                            val nextNode = edge.node
+                            if (nextNode.drain in interestingDrains && nextNode != node /* Skip loops */) {
+                                val nextNodeId = nodeId.goto(field)
+                                if (nodeIds[nextNode] != null)
+                                    error("Expected only one incoming field edge. ${nodeIds[nextNode]} != $nextNodeId")
+                                nodeIds[nextNode] = nextNodeId
+                                if (nextNode.drain == nextNode)
+                                    nextFront += nextNode
+                            }
+                        }
+                    }
+                    front = nextFront
+                }
+                for (drain in interestingDrains) {
+                    if (nodeIds[drain] == null && drain.edges.any { it.node.drain in interestingDrains })
+                        error("Drains have not been painted properly")
+                }
+
+                return nodeIds
             }
         }
     }
