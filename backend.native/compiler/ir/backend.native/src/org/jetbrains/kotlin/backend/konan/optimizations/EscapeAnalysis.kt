@@ -1060,6 +1060,14 @@ internal object EscapeAnalysis {
 
                 computeLifetimes()
 
+                /*
+                 * The next part determines the function's escape analysis result.
+                 * Of course, the simplest way would be just take the entire graph, but it might be big,
+                 * and during call graph traversal these EA graphs will continue to grow (since they are
+                 * being embedded at each call site). To overcome this, the graph must be reduced.
+                 * Let us call nodes that will be part of the result "interesting", and, obviously,
+                 * "interesting drains" - drains that are going to be in the result.
+                 */
                 val (numberOfDrains, nodeIds) = paintInterestingNodes()
 
                 DEBUG_OUTPUT(0) {
@@ -1100,8 +1108,8 @@ internal object EscapeAnalysis {
                 // then here it is assumed that it might also be being read from any node reachable
                 // by assignment edges considering them undirected. But in reality it is enough to just
                 // merge two sets: reachable by assignment edges and reachable by reversed assignment edges.
-                // But, this complicates things significantly since those sets might be different
-                // for each field read.
+                // But, there will be a downside - drains will have to be created for each field access,
+                // thus increasing the graph size significantly.
                 val visited = mutableSetOf<PointsToGraphNode>()
                 val drains = mutableListOf<PointsToGraphNode>()
                 val createdDrains = mutableSetOf<PointsToGraphNode>()
