@@ -606,19 +606,12 @@ internal object EscapeAnalysis {
             }
         }
 
-        private fun arrayLengthOf(node: DataFlowIR.Node): Int? {
-            if (node is DataFlowIR.Node.SimpleConst<*>) {
-                return node.value as? Int
-            }
-            if (node is DataFlowIR.Node.Variable) {
+        private fun arrayLengthOf(node: DataFlowIR.Node): Int? =
+                (node as? DataFlowIR.Node.SimpleConst<*>)?.value as? Int
                 // In case of several possible values, it's unknown what is used.
                 // TODO: if all values are constants which are less limit?
-                if (node.values.size == 1) {
-                    return arrayLengthOf(node.values.first().node)
-                }
-            }
-            return null
-        }
+                        ?: (node as? DataFlowIR.Node.Variable)
+                                ?.values?.singleOrNull()?.let { arrayLengthOf(it.node) }
 
         private val pointerSize = context.llvm.runtime.pointerSize
 
@@ -727,7 +720,7 @@ internal object EscapeAnalysis {
             RETURN_VALUE
         }
 
-        private class PointsToGraphEdge(var node: PointsToGraphNode, val field: DataFlowIR.Field?) {
+        private class PointsToGraphEdge(val node: PointsToGraphNode, val field: DataFlowIR.Field?) {
             val isAssignment get() = field == null
         }
 
@@ -1537,7 +1530,7 @@ internal object EscapeAnalysis {
                 }
             }
 
-            private fun propagateLifetimes(roots: List<PointsToGraphNode>? = null) {
+            private fun propagateLifetimes() {
                 val visited = mutableSetOf<PointsToGraphNode>()
 
                 fun propagate(node: PointsToGraphNode) {
@@ -1552,7 +1545,7 @@ internal object EscapeAnalysis {
                     }
                 }
 
-                for (node in (roots ?: allNodes.sortedBy { it.depth })) {
+                for (node in allNodes.sortedBy { it.depth }) {
                     if (node !in visited)
                         propagate(node)
                 }
