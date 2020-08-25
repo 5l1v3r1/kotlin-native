@@ -1330,20 +1330,36 @@ internal object EscapeAnalysis {
                 for (drain in interestingDrains)
                     for (edge in drain.edges) {
                         val node = edge.node
-                        if (edge.field != null && node.drain == node)
+                        if (edge.field != null && node.drain == node && node != drain /* Skip loops */)
                             standAloneDrains.remove(node)
                     }
+
                 var drainIndex = 0
-                var front = parameters.map { it }
+                for (drain in standAloneDrains) {
+                    if (nodeIds[drain] == null
+                            // A little optimization - skip leaf drains.
+                            && drain.edges.any { it.node.drain in interestingDrains })
+                        nodeIds[drain] = CompressedPointsToGraph.Node.drain(drainIndex++)
+                }
+                var front = nodeIds.keys.toList()
                 while (front.isNotEmpty()) {
-                    val nextFront = mutableSetOf<PointsToGraphNode>()
+                    val nextFront = mutableListOf<PointsToGraphNode>()
                     for (node in front) {
-                        paintNodes(node, nodeIds[node]!!.kind, mutableListOf(),
-                                interestingDrains, nodeIds, nextFront)
+                        val nodeId = nodeIds[node]!!
+                        for (edge in node.edges) {
+                            val field = edge.field ?: continue
+                            val nextNode = edge.node
+                            if (nextNode.drain in interestingDrains && nextNode != node /* Skip loops */) {
+                                val nextNodeId = nodeId.goto(field)
+                                if (nodeIds[nextNode] != null)
+                                    error("Expected only one incoming field edge. ${nodeIds[nextNode]} != $nextNodeId")
+                                nodeIds[nextNode] = nextNodeId
+                                if (nextNode.drain == nextNode)
+                                    nextFront += nextNode
+                            }
+                        }
                     }
-                    front = nextFront.filter { nodeIds[it] == null && it in standAloneDrains }
-                    for (node in front)
-                        nodeIds[node] = CompressedPointsToGraph.Node.drain(drainIndex++)
+                    front = nextFront
                 }
                 for (drain in interestingDrains) {
                     if (nodeIds[drain] == null && drain.edges.any { it.node.drain in interestingDrains })
@@ -1665,38 +1681,6 @@ internal object EscapeAnalysis {
                         findReachableDrains(nextDrain, visitedDrains)
                 }
             }
-
-            private fun paintNodes(
-                    node: PointsToGraphNode, kind: CompressedPointsToGraph.NodeKind,
-                    path: MutableList<DataFlowIR.Field>,
-                    interestingDrains: Set<PointsToGraphNode>,
-                    nodeIds: MutableMap<PointsToGraphNode, CompressedPointsToGraph.Node>,
-                    seenNotPaintedDrains: MutableSet<PointsToGraphNode>
-            ) {
-                val drain = node.drain
-                if (node != drain) {
-                    if (nodeIds[drain] == null
-                            // A little optimization - skip leaf drains.
-                            && (drain.edges.any { it.node.drain in interestingDrains }))
-                        seenNotPaintedDrains += drain
-                    return
-                }
-                for (edge in drain.edges) {
-                    val field = edge.field!!
-                    val nextNode = edge.node
-                    val nextDrain = nextNode.drain
-                    if (nextDrain in interestingDrains
-                            && nextNode != drain /* Skip loops */) {
-                        if (nodeIds[nextNode] != null)
-                            error("Expected only one incoming field edge")
-                        path.push(field)
-                        nodeIds[nextNode] = CompressedPointsToGraph.Node(kind, path.toTypedArray())
-                        paintNodes(nextNode, kind, path, interestingDrains, nodeIds, seenNotPaintedDrains)
-                        path.pop()
-                    }
-                }
-            }
-
         }
     }
 
