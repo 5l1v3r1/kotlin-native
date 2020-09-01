@@ -7,6 +7,7 @@ package kotlin.native.internal
 
 import kotlin.reflect.KFunction
 import kotlin.reflect.KType
+import kotlin.reflect.KClass
 
 @FixmeReflection
 internal abstract class KFunctionImpl<out R>(
@@ -15,12 +16,18 @@ internal abstract class KFunctionImpl<out R>(
 ): KFunction<R> {
     override fun equals(other: Any?): Boolean {
         if (other !is KFunctionImpl<*>) return false
-        return fqName == other.fqName && receiver == other.receiver && arity == other.arity && flags == other.flags
+        return fqName == other.fqName && receiver == other.receiver
+                && arity == other.arity && flags == other.flags
     }
 
-    override fun hashCode(): Int {
-        return ((fqName.hashCode() * 31 + receiver.hashCode()) * 31 + arity) * 31 + flags
+    private fun horner(x: Int, vararg coeffs: Int): Int {
+        var res = 0
+        for (coeff in coeffs)
+            res = res * x + coeff
+        return res
     }
+
+    override fun hashCode() = horner(31, fqName.hashCode(), receiver.hashCode(), arity, flags)
 
     override fun toString(): String {
         return "${if (name == "<init>") "constructor" else "function " + name}"

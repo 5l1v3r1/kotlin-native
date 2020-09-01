@@ -421,6 +421,8 @@ internal class KonanSymbols(
                     }
     )
 
+    override val functionAdapter = symbolTable.referenceClass(context.getKonanInternalClass("FunctionAdapter"))
+
     val refClass = symbolTable.referenceClass(context.getKonanInternalClass("Ref"))
 
     val kFunctionImpl =  symbolTable.referenceClass(context.reflectionTypes.kFunctionImpl)
