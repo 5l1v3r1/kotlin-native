@@ -7,6 +7,7 @@ package org.jetbrains.kotlin.backend.konan.lower
 
 import org.jetbrains.kotlin.backend.common.ClassLoweringPass
 import org.jetbrains.kotlin.backend.common.FileLoweringPass
+import org.jetbrains.kotlin.backend.common.ir.simpleFunctions
 import org.jetbrains.kotlin.backend.common.lower.EnumWhenLowering
 import org.jetbrains.kotlin.backend.common.lower.createIrBuilder
 import org.jetbrains.kotlin.backend.common.lower.irBlockBody
@@ -19,6 +20,7 @@ import org.jetbrains.kotlin.descriptors.ClassKind
 import org.jetbrains.kotlin.ir.builders.*
 import org.jetbrains.kotlin.ir.declarations.*
 import org.jetbrains.kotlin.ir.declarations.impl.IrPropertyImpl
+import org.jetbrains.kotlin.ir.declarations.lazy.IrLazyClass
 import org.jetbrains.kotlin.ir.expressions.*
 import org.jetbrains.kotlin.ir.expressions.IrStatementOrigin.ARGUMENTS_REORDERING_FOR_CALL
 import org.jetbrains.kotlin.ir.expressions.impl.*
@@ -125,6 +127,9 @@ internal class EnumUsageLowering(val context: Context)
     }
 
     private fun loadEnumEntry(startOffset: Int, endOffset: Int, enumClass: IrClass, name: Name): IrExpression {
+        if (enumClass is IrLazyClass) {
+            return loadExternalEntryByName(startOffset, endOffset, enumClass, name)
+        }
         val loweredEnum = context.specialDeclarationsFactory.getLoweredEnum(enumClass)
         val ordinal = loweredEnum.entriesMap[name]!!
         return IrCallImpl(
@@ -134,6 +139,19 @@ internal class EnumUsageLowering(val context: Context)
         ).apply {
             dispatchReceiver = IrCallImpl(startOffset, endOffset, loweredEnum.valuesGetter.returnType, loweredEnum.valuesGetter.symbol)
             putValueArgument(0, IrConstImpl.int(startOffset, endOffset, context.irBuiltIns.intType, ordinal))
+        }
+    }
+
+    // TODO: Current implementation is hacky.
+    private fun loadExternalEntryByName(startOffset: Int, endOffset: Int, enumClass: IrClass, name: Name): IrExpression {
+        val valueOfFunc = enumClass.functions
+                .singleOrNull { it.name.asString() == "valueOf" }
+                ?: error("No `valueOf` method in ${enumClass.name}")
+        return IrCallImpl(
+                startOffset, endOffset, enumClass.defaultType,
+                valueOfFunc.symbol
+        ).apply {
+            putValueArgument(0, IrConstImpl.string(startOffset, endOffset, context.irBuiltIns.stringType, name.asString()))
         }
     }
 }
