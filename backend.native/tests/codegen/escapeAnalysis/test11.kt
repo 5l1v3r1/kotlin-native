@@ -13,6 +13,12 @@ class A(val s: String) {
 
 var f: F? = null
 
+// ----- Agressive -----
+// PointsTo:
+//     RET.v@lue -> P0.f
+//     D0 -> P0.f
+// Escapes: D0
+// ----- Passive -----
 // PointsTo:
 //     RET.v@lue -> P0.f
 //     D0 -> P0.f

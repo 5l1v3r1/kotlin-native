@@ -19,15 +19,28 @@ class D {
     var o: A = A("")
 }
 
+// ----- Agressive -----
 // PointsTo:
 //     P1.g -> D0
 //     P2.f -> D0
 //     P4.o -> P1.g
 //     P4.o -> P2.f
 //     P4.o -> D0
+//     RET.v@lue -> D1
 //     D0.p -> P1
 //     D0.h -> P3
-// Escapes:
+// Escapes: D1
+// ----- Passive -----
+// PointsTo:
+//     P1.g -> D0
+//     P2.f -> D0
+//     P4.o -> P1.g
+//     P4.o -> P2.f
+//     P4.o -> D0
+//     RET.v@lue -> D1
+//     D0.p -> P1
+//     D0.h -> P3
+// Escapes: D1
 fun foo(z: Boolean, c: C, b: B, s: String, d: D) {
     val v = if(z) c.g else b.f
     v.h = s

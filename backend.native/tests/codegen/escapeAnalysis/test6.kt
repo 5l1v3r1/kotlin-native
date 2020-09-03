@@ -13,6 +13,16 @@ class C {
     var g: B = B()
 }
 
+// ----- Agressive -----
+// PointsTo:
+//     P1.g -> D0
+//     P2.g -> D0
+//     RET.v@lue -> P1.g
+//     RET.v@lue -> P2.g
+//     RET.v@lue -> D0
+//     D0.f -> P3
+// Escapes:
+// ----- Passive -----
 // PointsTo:
 //     P1.g -> D0
 //     P2.g -> D0

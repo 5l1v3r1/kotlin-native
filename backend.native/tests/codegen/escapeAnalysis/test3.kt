@@ -10,6 +10,12 @@ class B {
     var s: String? = null
 }
 
+// ----- Agressive -----
+// PointsTo:
+//     P1.s -> P0.s
+//     RET.v@lue -> P0.s
+// Escapes:
+// ----- Passive -----
 // PointsTo:
 //     P1.s -> P0.s
 //     RET.v@lue -> P0.s

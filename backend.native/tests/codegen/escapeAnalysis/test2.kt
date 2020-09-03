@@ -7,6 +7,11 @@ package codegen.escapeAnalysis.test2
 
 class A(val s: String)
 
+// ----- Agressive -----
+// PointsTo:
+//     RET.v@lue -> P0.s
+// Escapes:
+// ----- Passive -----
 // PointsTo:
 //     RET.v@lue -> P0.s
 // Escapes:

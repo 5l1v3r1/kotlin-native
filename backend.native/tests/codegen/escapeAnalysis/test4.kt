@@ -13,9 +13,16 @@ class C {
     var g: B = B()
 }
 
+// ----- Agressive -----
 // PointsTo:
 //     P0.g.f -> P1.g.f
-// Escapes:
+//     RET.v@lue -> D0
+// Escapes: D0
+// ----- Passive -----
+// PointsTo:
+//     P0.g.f -> P1.g.f
+//     RET.v@lue -> D0
+// Escapes: D0
 fun foo(c1: C, c2: C) {
     c1.g.f = c2.g.f
 }
