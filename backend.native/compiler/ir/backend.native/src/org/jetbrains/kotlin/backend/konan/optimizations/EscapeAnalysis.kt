@@ -756,14 +756,16 @@ internal object EscapeAnalysis {
             var forcedLifetime: Lifetime? = null
 
             lateinit var drain: PointsToGraphNode
+            val isDrain get() = this == drain
 
             val actualDrain: PointsToGraphNode
                 get() = drain.let {
-                    if (it.drain == it) it
+                    if (it.isDrain) it
                     // Flip to the real drain as it is done in the disjoint sets algorithm,
                     // to reduce the time spent in this function.
                     else it.actualDrain.also { drain = it }
                 }
+            val isActualDrain get() = this == actualDrain
 
             val beingReturned get() = nodeInfo.has(Role.RETURN_VALUE)
         }
@@ -938,7 +940,7 @@ internal object EscapeAnalysis {
 
                 fun PointsToGraphNode.format() =
                         (nodeLabel?.invoke(this) ?:
-                        (if (markDrains && drain == this) "d" else "")
+                        (if (markDrains && isDrain) "d" else "")
                         + (node?.let { "n${ids[it]!!}" } ?: "t${tempIds[this]}")) +
                                 "[d=$depth,${if (this in escapeOrigins) "eo" else if (escapes(this)) "e" else ""}]"
 
@@ -1054,7 +1056,7 @@ internal object EscapeAnalysis {
                     }
                 }
 
-                buildComponentsAndDrains()
+                buildDrains()
 
                 DEBUG_OUTPUT(0) { printDigraph(true) }
 
@@ -1062,7 +1064,7 @@ internal object EscapeAnalysis {
 
                 /*
                  * The next part determines the function's escape analysis result.
-                 * Of course, the simplest way would be just take the entire graph, but it might be big,
+                 * Of course, the simplest way would be to just take the entire graph, but it might be big,
                  * and during call graph traversal these EA graphs will continue to grow (since they are
                  * being embedded at each call site). To overcome this, the graph must be reduced.
                  * Let us call nodes that will be part of the result "interesting", and, obviously,
@@ -1103,7 +1105,7 @@ internal object EscapeAnalysis {
                 )
             }
 
-            private fun buildComponentsAndDrains() {
+            private fun buildDrains() {
                 // TODO: This is actually conservative. If a field is being read of some node,
                 // then here it is assumed that it might also be being read from any node reachable
                 // by assignment edges considering them undirected. But in reality it is enough to just
@@ -1137,6 +1139,8 @@ internal object EscapeAnalysis {
                 }
 
                 fun PointsToGraphNode.flipTo(otherDrain: PointsToGraphNode) {
+                    require(isDrain)
+                    require(otherDrain.isDrain)
                     drain = otherDrain
                     otherDrain.edges += edges
                     edges.clear()
@@ -1192,17 +1196,12 @@ internal object EscapeAnalysis {
                         }
                     }
                     drains.clear()
-                    for (drain in possibleDrains)
-                        if (drain.drain == drain)
-                            drains += drain
+                    possibleDrains.filterTo(drains) { it.isDrain }
                 }
 
                 // Compute current drains.
                 drains.clear()
-                for (node in allNodes) {
-                    if (node.actualDrain == node)
-                        drains += node
-                }
+                allNodes.filterTo(drains) { it.isActualDrain }
 
                 // A validation.
                 for (drain in drains) {
@@ -1232,7 +1231,7 @@ internal object EscapeAnalysis {
                         }
                         // All nodes in [nodes] must be connected to each other, but a drain, by definition,
                         // cannot have outgoing assignment edges, thus a new drain must be created here.
-                        nodes.atMostOne { it.node.actualDrain == it.node }
+                        nodes.atMostOne { it.node.isActualDrain }
                                 ?.node?.actualDrain?.flipTo(newDrain())
 
                         for (i in nodes.indices) {
@@ -1291,7 +1290,7 @@ internal object EscapeAnalysis {
                     if (incomingEdges.isEmpty()) {
                         if (drain !in parameterDrains)
                             error("A drain with no incoming edges")
-                        if (!parameters.any { it.drain == drain && escapes(it) })
+                        if (!parameters.any { it.isDrain && escapes(it) })
                             interestingDrains.remove(drain)
                         continue
                     }
@@ -1679,7 +1678,7 @@ internal object EscapeAnalysis {
                 for (drain in interestingDrains)
                     for (edge in drain.edges) {
                         val node = edge.node
-                        if (node.drain == node && node != drain /* Skip loops */)
+                        if (node.isDrain && node != drain /* Skip loops */)
                             standAloneDrains.remove(node)
                     }
                 for (drain in standAloneDrains) {
@@ -1694,15 +1693,15 @@ internal object EscapeAnalysis {
                     val nextFront = mutableListOf<PointsToGraphNode>()
                     for (node in front) {
                         val nodeId = nodeIds[node]!!
-                        for (edge in node.edges) {
-                            val field = (edge as? PointsToGraphEdge.Field)?.field ?: continue
+                        node.edges.filterIsInstance<PointsToGraphEdge.Field>().forEach { edge ->
+                            val field = edge.field
                             val nextNode = edge.node
                             if (nextNode.drain in interestingDrains && nextNode != node /* Skip loops */) {
                                 val nextNodeId = nodeId.goto(field)
                                 if (nodeIds[nextNode] != null)
                                     error("Expected only one incoming field edge. ${nodeIds[nextNode]} != $nextNodeId")
                                 nodeIds[nextNode] = nextNodeId
-                                if (nextNode.drain == nextNode)
+                                if (nextNode.isDrain)
                                     nextFront += nextNode
                             }
                         }
