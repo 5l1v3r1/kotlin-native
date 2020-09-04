@@ -11,7 +11,6 @@ import org.jetbrains.kotlin.backend.konan.PrimitiveBinaryType
 import org.jetbrains.kotlin.backend.konan.RuntimeNames
 import org.jetbrains.kotlin.backend.konan.ir.*
 import org.jetbrains.kotlin.backend.konan.isObjCMetaClass
-import org.jetbrains.kotlin.builtins.KotlinBuiltIns
 import org.jetbrains.kotlin.builtins.UnsignedType
 import org.jetbrains.kotlin.descriptors.ClassKind
 import org.jetbrains.kotlin.descriptors.Modality
@@ -835,7 +834,7 @@ private fun KotlinStubs.mapType(
 
     isObjCReferenceType(type) -> ObjCReferenceValuePassing(symbols, type, retained = retained)
 
-    type.isForwardDeclaration() -> ForwardDeclarationPassing(symbols)
+    type.isForwardDeclaration() -> IncompleteTypePassing(symbols)
 
     else -> reportUnsupportedType("doesn't correspond to any C type")
 }
@@ -931,12 +930,11 @@ private abstract class SimpleValuePassing : ValuePassing {
     }
 }
 
-private class ForwardDeclarationPassing(private val symbols: KonanSymbols) : SimpleValuePassing() {
+private class IncompleteTypePassing(private val symbols: KonanSymbols) : SimpleValuePassing() {
     override val kotlinBridgeType: IrType
         get() = symbols.nativePtrType
     override val cBridgeType: CType
         get() = CTypes.voidPtr
-
     override val cType: CType
         get() = CTypes.voidPtr
 
