@@ -43,6 +43,7 @@ import org.jetbrains.kotlin.types.Variance
 import org.jetbrains.kotlin.util.OperatorNameConventions
 import org.jetbrains.kotlin.backend.konan.getObjCMethodInfo
 import org.jetbrains.kotlin.backend.konan.lower.CallableReferenceLowering
+import org.jetbrains.kotlin.backend.konan.serialization.KonanIrLinker
 import org.jetbrains.kotlin.builtins.StandardNames
 import org.jetbrains.kotlin.ir.descriptors.*
 
@@ -834,8 +835,13 @@ private fun KotlinStubs.mapType(
 
     isObjCReferenceType(type) -> ObjCReferenceValuePassing(symbols, type, retained = retained)
 
+    type.isForwardDeclaration() -> ForwardDeclarationPassing(symbols)
+
     else -> reportUnsupportedType("doesn't correspond to any C type")
 }
+
+private fun IrType.isForwardDeclaration(): Boolean =
+        classOrNull?.owner?.origin == KonanIrLinker.FORWARD_DECLARATION_ORIGIN
 
 private fun KotlinStubs.isObjCReferenceType(type: IrType): Boolean {
     if (!target.family.isAppleFamily) return false
@@ -923,6 +929,24 @@ private abstract class SimpleValuePassing : ValuePassing {
         val cBridgeCall = buildCBridgeCall()
         cBodyLines += "return ${bridgedToC(cBridgeCall)};"
     }
+}
+
+private class ForwardDeclarationPassing(private val symbols: KonanSymbols) : SimpleValuePassing() {
+    override val kotlinBridgeType: IrType
+        get() = symbols.nativePtrType
+    override val cBridgeType: CType
+        get() = CTypes.voidPtr
+
+    override val cType: CType
+        get() = CTypes.voidPtr
+
+    override fun IrBuilderWithScope.kotlinToBridged(expression: IrExpression): IrExpression = expression
+    override fun IrBuilderWithScope.bridgedToKotlin(expression: IrExpression, symbols: KonanSymbols): IrExpression =
+            irCall(symbols.interopInterpretNullablePointed).also {
+                it.putValueArgument(0, expression)
+            }
+    override fun bridgedToC(expression: String): String = expression
+    override fun cToBridged(expression: String): String = expression
 }
 
 private class TrivialValuePassing(val kotlinType: IrType, override val cType: CType) : SimpleValuePassing() {
